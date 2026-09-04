@@ -1,0 +1,19 @@
+{
+  "name": "wokibi-help",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @wokibi/api\" \"npm run dev -w @wokibi/web\"",
+    "dev:api": "npm run dev -w @wokibi/api",
+    "dev:web": "npm run dev -w @wokibi/web",
+    "build": "npm run build -w @wokibi/api && npm run build -w @wokibi/web",
+    "seed": "npm run seed -w @wokibi/api",
+    "db:up": "docker compose up -d mongo",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
