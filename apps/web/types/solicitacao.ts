@@ -58,3 +58,31 @@ export interface PacienteContexto {
   nome: string;
   prontuario: string;
 }
+
+/** Snapshot do formulário para o pipeline multimodal do host (áudio + imagens). */
+export interface MultimodalAssistContext {
+  descricao: string;
+  anexos: File[];
+  etiquetaPrincipal: EtiquetaPrincipal;
+  etiquetaEspecifica: string;
+  prioridade: Prioridade;
+  nomeSolicitante: string;
+  nomePaciente: string;
+  prontuarioPaciente: string;
+}
+
+/** Helpers para a IA/host preencher o modal a partir do modelo multimodal. */
+export interface MultimodalAssistHelpers {
+  getContext: () => MultimodalAssistContext;
+  setDescricao: (texto: string) => void;
+  appendToDescricao: (texto: string) => void;
+  setEtiquetaPrincipal: (value: EtiquetaPrincipal) => void;
+  setEtiquetaEspecifica: (value: string) => void;
+  setPrioridade: (value: Prioridade) => void;
+  setAnexos: (files: File[]) => void;
+  addAnexos: (files: File[]) => void;
+}
+
+export type OnMultimodalAssist = (
+  helpers: MultimodalAssistHelpers
+) => void | Promise<void>;

@@ -14,6 +14,7 @@ Este repositório é um **pacote pronto para integrar**: API + UI de demonstraç
 ## Funcionalidades
 
 - **Modal de nova solicitação** — solicitante, paciente, etiquetas, descrição, prioridade e anexos
+- **Gancho multimodal** — botão Mic pronto para o host ligar áudio + imagens (sem STT embutido)
 - **Lista administrativa** — filtros por status, edição, exclusão
 - **Chat** — visão desenvolvedor e usuário
 - **Notificações** — sino com mensagens não lidas do desenvolvedor
@@ -38,6 +39,9 @@ Siga o INTEGRATION.md ao pé da letra (missão, arquivos a copiar, contrato da A
 passos de wiring e gaps conhecidos).
 Use a Strategy A (API separada) salvo se já tivermos Express/Mongo — aí use Strategy B.
 Conecte FabButton + SolicitacaoModal com o usuário logado e o paciente em contexto.
+Ligue SolicitacaoModal.onMultimodalAssist ao nosso pipeline multimodal existente
+(áudio + imagens). NÃO implemente STT/Whisper novo — reutilize o nosso sistema.
+Use helpers.getContext().anexos e helpers.setDescricao / appendToDescricao.
 Coloque a lista administrativa na navegação e o NotificacoesPopover no header.
 Ao abrir o chat relacionado, chame marcarComentarioLido.
 Não reescreva features não relacionadas. Mantenha os nomes dos campos da API.
@@ -53,6 +57,7 @@ O `INTEGRATION.md` é a fonte da verdade para a IA: o que copiar, props dos comp
 | Ponto no software | Peça deste módulo |
 |-------------------|-------------------|
 | Tela com paciente / ação rápida | `FabButton` + `SolicitacaoModal` |
+| Áudio + imagens (modelo multimodal do host) | `onMultimodalAssist` ou `renderMultimodalButton` no modal |
 | Header | `NotificacoesPopover` |
 | Menu / sidebar | Link para a lista + badge opcional de pendentes |
 | Área admin | Página no padrão de `app/solicitacoes/page.tsx` |

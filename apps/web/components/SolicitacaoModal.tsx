@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { User, Paperclip, X, Mic } from 'lucide-react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
+import { User, Paperclip, X, Mic, Loader2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -15,7 +15,16 @@ import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { ETIQUETAS, PRIORIDADES } from '@/lib/constants';
 import { createSolicitacao } from '@/lib/api';
-import type { EtiquetaPrincipal, PacienteContexto, Prioridade, Solicitacao } from '@/types/solicitacao';
+import { cn } from '@/lib/utils';
+import type {
+  EtiquetaPrincipal,
+  MultimodalAssistContext,
+  MultimodalAssistHelpers,
+  OnMultimodalAssist,
+  PacienteContexto,
+  Prioridade,
+  Solicitacao,
+} from '@/types/solicitacao';
 
 interface SolicitacaoModalProps {
   open: boolean;
@@ -23,6 +32,18 @@ interface SolicitacaoModalProps {
   nomeSolicitanteDefault?: string;
   pacienteDefault?: PacienteContexto;
   onSuccess?: (solicitacao: Solicitacao) => void;
+  /**
+   * Hook para o pipeline multimodal do host (áudio + imagens → texto/etiquetas).
+   * Este módulo NÃO grava nem transcreve áudio — só chama o host.
+   */
+  onMultimodalAssist?: OnMultimodalAssist;
+  /**
+   * Substitui o botão Mic padrão. Use quando o host já tiver UI própria de áudio.
+   */
+  renderMultimodalButton?: (helpers: MultimodalAssistHelpers & {
+    busy: boolean;
+    disabled: boolean;
+  }) => ReactNode;
 }
 
 export function SolicitacaoModal({
@@ -31,6 +52,8 @@ export function SolicitacaoModal({
   nomeSolicitanteDefault = '',
   pacienteDefault,
   onSuccess,
+  onMultimodalAssist,
+  renderMultimodalButton,
 }: SolicitacaoModalProps) {
   const [nomeSolicitante, setNomeSolicitante] = useState(nomeSolicitanteDefault);
   const [nomePaciente, setNomePaciente] = useState(pacienteDefault?.nome ?? '');
@@ -41,8 +64,30 @@ export function SolicitacaoModal({
   const [prioridade, setPrioridade] = useState<Prioridade>('media');
   const [anexos, setAnexos] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
+  const [assistBusy, setAssistBusy] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<MultimodalAssistContext>({
+    descricao: '',
+    anexos: [],
+    etiquetaPrincipal: 'erro',
+    etiquetaEspecifica: '',
+    prioridade: 'media',
+    nomeSolicitante: '',
+    nomePaciente: '',
+    prontuarioPaciente: '',
+  });
+
+  formRef.current = {
+    descricao,
+    anexos,
+    etiquetaPrincipal,
+    etiquetaEspecifica,
+    prioridade,
+    nomeSolicitante,
+    nomePaciente,
+    prontuarioPaciente: prontuario,
+  };
 
   useEffect(() => {
     if (open) {
@@ -53,6 +98,28 @@ export function SolicitacaoModal({
   }, [open, nomeSolicitanteDefault, pacienteDefault]);
 
   const especificas = ETIQUETAS[etiquetaPrincipal].especificas;
+  const hasMultimodalHook = Boolean(onMultimodalAssist || renderMultimodalButton);
+
+  function buildAssistHelpers(): MultimodalAssistHelpers {
+    return {
+      getContext: () => ({ ...formRef.current, anexos: [...formRef.current.anexos] }),
+      setDescricao,
+      appendToDescricao: (texto) => {
+        const t = texto.trim();
+        if (!t) return;
+        setDescricao((prev) => (prev.trim() ? `${prev.trim()} ${t}` : t));
+      },
+      setEtiquetaPrincipal: (value) => {
+        setEtiquetaPrincipal(value);
+        setEtiquetaEspecifica(ETIQUETAS[value].especificas[0]?.value ?? '');
+      },
+      setEtiquetaEspecifica,
+      setPrioridade,
+      setAnexos: (files) => setAnexos(files.slice(0, 5)),
+      addAnexos: (files) =>
+        setAnexos((prev) => [...prev, ...files].slice(0, 5)),
+    };
+  }
 
   function handleEtiquetaChange(value: EtiquetaPrincipal) {
     setEtiquetaPrincipal(value);
@@ -67,6 +134,23 @@ export function SolicitacaoModal({
 
   function removeAnexo(index: number) {
     setAnexos((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleMultimodalClick() {
+    if (!onMultimodalAssist || assistBusy || loading) return;
+    setError('');
+    setAssistBusy(true);
+    try {
+      await onMultimodalAssist(buildAssistHelpers());
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Falha no assistente multimodal'
+      );
+    } finally {
+      setAssistBusy(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -106,7 +190,15 @@ export function SolicitacaoModal({
     setAnexos([]);
     setEtiquetaEspecifica('');
     setPrioridade('media');
+    setAssistBusy(false);
   }
+
+  const assistHelpers = buildAssistHelpers();
+  const assistUi = {
+    ...assistHelpers,
+    busy: assistBusy,
+    disabled: loading || assistBusy,
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -188,13 +280,51 @@ export function SolicitacaoModal({
             </div>
           )}
 
-          <div className="space-y-2 relative">
-            <Textarea
-              value={descricao}
-              onChange={(e) => setDescricao(e.target.value)}
-              placeholder="Ex: Quero um bloco com a evolução diária da gasometria arterial e o balanço hídrico das últimas 72h..."
-            />
-            <Mic className="absolute bottom-3 left-3 h-4 w-4 text-wokibi-muted" />
+          <div className="space-y-2">
+            <Label>Descrição</Label>
+            <div className="relative">
+              <Textarea
+                value={descricao}
+                onChange={(e) => setDescricao(e.target.value)}
+                placeholder="Ex: Quero um bloco com a evolução diária da gasometria arterial e o balanço hídrico das últimas 72h..."
+                className="pb-10"
+              />
+              <div className="absolute bottom-2 left-2">
+                {renderMultimodalButton ? (
+                  renderMultimodalButton(assistUi)
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleMultimodalClick}
+                    disabled={!hasMultimodalHook || assistUi.disabled}
+                    title={
+                      hasMultimodalHook
+                        ? 'Assistente multimodal (áudio + imagens do host)'
+                        : 'Aguardando integração multimodal do host (onMultimodalAssist)'
+                    }
+                    className={cn(
+                      'rounded-lg p-1.5 transition-colors',
+                      hasMultimodalHook
+                        ? 'text-wokibi-purple-light hover:bg-wokibi-border hover:text-white'
+                        : 'cursor-not-allowed text-wokibi-muted/50'
+                    )}
+                    aria-label="Assistente multimodal"
+                  >
+                    {assistBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Mic className="h-4 w-4" />
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+            {!hasMultimodalHook && (
+              <p className="text-xs text-wokibi-muted">
+                O microfone é um ponto de integração: o host liga o modelo multimodal via{' '}
+                <code className="text-wokibi-purple-light">onMultimodalAssist</code>.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -256,7 +386,7 @@ export function SolicitacaoModal({
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || assistBusy}>
               {loading ? 'Salvando...' : 'Salvar Solicitação'}
             </Button>
           </div>

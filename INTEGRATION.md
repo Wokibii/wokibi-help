@@ -10,9 +10,10 @@
 Integrate **Wokibi Help** into the host software so that:
 
 1. End users can open a **new request modal** (FAB `+`) with requester + patient context prefilled.
-2. Admins/devs can open a **request list** with filters, status/priority edits, notes, delete, and chat.
-3. Users see a **notifications bell** for unread developer chat messages.
-4. Backend persists requests, comments, and file uploads.
+2. The Mic button is wired to the **host multimodal pipeline** (audio + images → description/labels) via `onMultimodalAssist` — this module does not implement STT.
+3. Admins/devs can open a **request list** with filters, status/priority edits, notes, delete, and chat.
+4. Users see a **notifications bell** for unread developer chat messages.
+5. Backend persists requests, comments, and file uploads.
 
 Do **not** rewrite the product from scratch. Prefer copy/adapt of the files listed below. Preserve API contracts and component props unless the host stack forces a thin adapter layer.
 
@@ -182,10 +183,69 @@ Floating action button. Place on screens where creating a request makes sense (e
   nomeSolicitanteDefault={usuario.nome}           // logged-in user
   pacienteDefault={{ nome: p.nome, prontuario: p.id }} // current patient context
   onSuccess={(solicitacao) => { /* toast / invalidate queries */ }}
+  // Multimodal (REQUIRED for Mic to work — see §6.1)
+  onMultimodalAssist={async (helpers) => {
+    const ctx = helpers.getContext(); // descricao, anexos[], paciente, etc.
+    const result = await hostMultimodalPipeline({
+      audio: await hostCaptureAudio(), // host-owned
+      images: ctx.anexos,
+      patient: { nome: ctx.nomePaciente, prontuario: ctx.prontuarioPaciente },
+    });
+    helpers.setDescricao(result.descricao);
+    if (result.etiquetaPrincipal) helpers.setEtiquetaPrincipal(result.etiquetaPrincipal);
+    if (result.etiquetaEspecifica) helpers.setEtiquetaEspecifica(result.etiquetaEspecifica);
+  }}
 />
 ```
 
 Creates via `POST /api/solicitacoes` as `multipart/form-data`.
+
+#### §6.1 Multimodal audio + images (host-owned — do not reimplement)
+
+This module **does not** record audio, run STT, or call a multimodal model. The Mic button is an **integration hook**.
+
+| Prop | Purpose |
+|------|---------|
+| `onMultimodalAssist` | Called when the default Mic is clicked. Host runs its multimodal pipeline (audio + images) and fills the form via helpers. |
+| `renderMultimodalButton` | Optional. Replace the Mic UI with the host’s own audio control; receives the same helpers + `busy` / `disabled`. |
+
+**Helpers** (`MultimodalAssistHelpers` in `types/solicitacao.ts`):
+
+| Helper | Use |
+|--------|-----|
+| `getContext()` | Current form snapshot (`descricao`, `anexos: File[]`, etiquetas, paciente, etc.) |
+| `setDescricao(text)` | Replace description |
+| `appendToDescricao(text)` | Append transcribed / model text |
+| `setEtiquetaPrincipal` / `setEtiquetaEspecifica` | Optional label suggestions from the model |
+| `setPrioridade` | Optional |
+| `setAnexos` / `addAnexos` | If the host pipeline also returns/selects files |
+
+**Rules for the integrating AI (Cursor):**
+
+1. Wire Mic to the **existing** host multimodal system — do not add Whisper/Web Speech/new vendor SDK here unless the host already uses it.
+2. Typical flow: capture audio (host) → send **audio + `ctx.anexos`** to the host multimodal model → `setDescricao` / etiquetas.
+3. Keep multipart upload of `anexos` on submit unchanged.
+4. Without `onMultimodalAssist` / `renderMultimodalButton`, the Mic stays disabled (intentional).
+5. Types: `OnMultimodalAssist`, `MultimodalAssistHelpers`, `MultimodalAssistContext`.
+
+Example with custom button:
+
+```tsx
+<SolicitacaoModal
+  open={open}
+  onOpenChange={setOpen}
+  renderMultimodalButton={({ appendToDescricao, getContext, busy, disabled }) => (
+    <HostAudioButton
+      disabled={disabled || busy}
+      onDone={async (audioBlob) => {
+        const { anexos } = getContext();
+        const text = await hostMultimodal({ audio: audioBlob, images: anexos });
+        appendToDescricao(text);
+      }}
+    />
+  )}
+/>
+```
 
 ### `NotificacoesPopover`
 
@@ -272,11 +332,12 @@ Types of truth: `apps/web/types/solicitacao.ts` and `apps/api/src/types/index.ts
 4. **Install deps** + merge Tailwind `wokibi` colors (or remap).
 5. **Env** — set `NEXT_PUBLIC_API_URL` / API Mongo + CORS.
 6. **User surface** — mount `FabButton` + `SolicitacaoModal` where patient/user context exists; pass real `nomeSolicitanteDefault` and `pacienteDefault`.
-7. **Admin surface** — add `/solicitacoes` (or host path) using the list page pattern.
-8. **Header** — mount `NotificacoesPopover`.
-9. **Nav** — link to the list; optional pending badge via `stats`.
-10. **Verify** — create request with attachment → appears in list → change status → chat both sides → notification appears for unread dev messages.
-11. **Production uploads** — demo stores files on local disk (`UPLOAD_DIR`). Replace with S3/Cloudinary/etc. if required; keep the `Anexo` shape `{ nome, url, tipo, tamanhoBytes }`.
+7. **Multimodal** — wire `onMultimodalAssist` (or `renderMultimodalButton`) to the host’s existing audio + images model. Do not invent a new STT stack in this module.
+8. **Admin surface** — add `/solicitacoes` (or host path) using the list page pattern.
+9. **Header** — mount `NotificacoesPopover`.
+10. **Nav** — link to the list; optional pending badge via `stats`.
+11. **Verify** — create request with attachment → appears in list → change status → chat both sides → notification appears for unread dev messages; Mic fills description via host multimodal.
+12. **Production uploads** — demo stores files on local disk (`UPLOAD_DIR`). Replace with S3/Cloudinary/etc. if required; keep the `Anexo` shape `{ nome, url, tipo, tamanhoBytes }`.
 
 ---
 
@@ -285,6 +346,7 @@ Types of truth: `apps/web/types/solicitacao.ts` and `apps/api/src/types/index.ts
 | Gap | Detail |
 |-----|--------|
 | Mark-as-read not wired in UI | `marcarComentarioLido` exists in `lib/api.ts` and `PATCH .../lida` exists in API, but `NotificacoesPopover` / `SolicitacaoChat` never call it. Notifications stay until something sets `lida: true`. **Recommended:** call `marcarComentarioLido` when user opens the related chat or clicks a notification. |
+| Multimodal not wired in demo | Mic is an extension point (`onMultimodalAssist`). Demo does not pass it — button stays disabled until the host connects its multimodal pipeline. |
 | No auth | Any client can hit the API. Add host auth before production. |
 | No user scoping on notifications | `GET /api/notificacoes` returns all unread developer comments globally (demo). Scope by requester/user when auth exists. |
 | Demo-only shell | Home page patient data is hardcoded (`PACIENTE_DEMO`). Replace with host context. |
@@ -304,6 +366,7 @@ Types of truth: `apps/web/types/solicitacao.ts` and `apps/api/src/types/index.ts
 
 - Don't invent new endpoints that duplicate existing ones.
 - Don't remove multipart upload without replacing storage.
+- Don't implement a new speech-to-text or multimodal provider inside this module — wire the host’s existing one via `onMultimodalAssist`.
 - Don't drop the chat `visao` dual-mode without an equivalent UX.
 - Don't commit secrets; use `.env` / `.env.example` patterns already in the repo.
 - Don't treat `tsconfig.tsbuildinfo` as a source file to integrate.
@@ -321,6 +384,7 @@ Types of truth: `apps/web/types/solicitacao.ts` and `apps/api/src/types/index.ts
 - [ ] Bell shows unread developer messages.
 - [ ] (Recommended) Opening/reading a notification marks it read and clears the badge.
 - [ ] Design tokens render correctly (no missing `wokibi-*` classes).
+- [ ] `onMultimodalAssist` (or `renderMultimodalButton`) wired to host multimodal; Mic fills `descricao` from audio + images.
 - [ ] Auth applied if host requires it.
 
 ---
@@ -335,6 +399,9 @@ Integrate the Wokibi Help module into this repository.
 Follow INTEGRATION.md exactly (mission, file list, API contract, wiring steps, known gaps).
 Use Strategy A (separate API) unless this repo already has Express/Mongo — then prefer Strategy B.
 Wire FabButton + SolicitacaoModal with our logged-in user and current patient context.
+Wire SolicitacaoModal.onMultimodalAssist to our existing multimodal pipeline (audio + images).
+Do NOT add a new STT/Whisper/vendor SDK — reuse our system. Use helpers.getContext().anexos
+and helpers.setDescricao / appendToDescricao (and etiquetas if the model returns them).
 Add the admin solicitations page to our navigation.
 Mount NotificacoesPopover in the header.
 Wire marcarComentarioLido when the user opens the related chat.
